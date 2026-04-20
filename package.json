@@ -1,0 +1,269 @@
+{
+  "name": "vscode-kie-chat-provider",
+  "displayName": "KIE Chat Provider",
+  "description": "Add built-in KIE chat models and custom OpenAI-compatible models to the Copilot chat model picker.",
+  "version": "0.0.3",
+  "publisher": "local",
+  "private": true,
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "AI",
+    "Chat"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onCommand:kieChatProvider.manageCredentials",
+    "onCommand:kieChatProvider.clearApiKey"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "kieChatProvider.manageCredentials",
+        "title": "KIE Chat Provider: Configure Credential"
+      },
+      {
+        "command": "kieChatProvider.clearApiKey",
+        "title": "KIE Chat Provider: Clear Credential"
+      }
+    ],
+    "languageModelChatProviders": [
+      {
+        "vendor": "kie",
+        "displayName": "KIE",
+        "managementCommand": "kieChatProvider.manageCredentials"
+      }
+    ],
+    "configuration": {
+      "title": "KIE Chat Provider",
+      "properties": {
+        "kieChatProvider.includeBuiltInKieModels": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the built-in KIE chat model catalog from the official KIE market docs."
+        },
+        "kieChatProvider.disabledBuiltInModelIds": {
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "markdownDescription": "Optional list of built-in model ids to hide from the picker, for example `gpt-5-4` or `claude-haiku-4-5`."
+        },
+        "kieChatProvider.models": {
+          "type": "array",
+          "default": [],
+          "markdownDescription": "Custom multi-model configuration. Entries in this array are added on top of the built-in KIE catalog. If a custom entry uses the same `id` as a built-in model, the custom entry overrides that built-in definition.",
+          "items": {
+            "type": "object",
+            "required": [
+              "id",
+              "displayName",
+              "endpoint"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Unique model id within this extension provider."
+              },
+              "displayName": {
+                "type": "string",
+                "description": "Model name shown in the Copilot model picker."
+              },
+              "endpoint": {
+                "type": "string",
+                "description": "Full HTTPS endpoint for the selected protocol."
+              },
+              "protocol": {
+                "type": "string",
+                "enum": [
+                  "openai-chat",
+                  "openai-responses",
+                  "claude",
+                  "gemini"
+                ],
+                "default": "openai-chat",
+                "description": "Upstream API protocol. Use openai-chat for chat/completions, openai-responses for responses-style APIs, claude for /v1/messages, and gemini for streamGenerateContent."
+              },
+              "requestModel": {
+                "type": "string",
+                "description": "Model name sent in the JSON body when the chosen protocol expects a model field or when sendModelInBody is enabled. Defaults to id."
+              },
+              "family": {
+                "type": "string",
+                "description": "Family metadata shown in the language models editor.",
+                "default": "openai-compatible"
+              },
+              "vendorVersion": {
+                "type": "string",
+                "description": "Version metadata displayed for the contributed model.",
+                "default": "1.0.0"
+              },
+              "tooltip": {
+                "type": "string",
+                "description": "Optional tooltip shown when hovering the model."
+              },
+              "detail": {
+                "type": "string",
+                "description": "Optional detail text shown next to the model."
+              },
+              "maxInputTokens": {
+                "type": "number",
+                "minimum": 1,
+                "default": 131072,
+                "description": "Advertised maximum input token count."
+              },
+              "maxOutputTokens": {
+                "type": "number",
+                "minimum": 1,
+                "default": 8192,
+                "description": "Advertised maximum output token count."
+              },
+              "enableVision": {
+                "type": "boolean",
+                "default": true,
+                "description": "Advertise image input support in the model picker."
+              },
+              "enableTools": {
+                "type": "boolean",
+                "default": true,
+                "description": "Advertise tool-calling support and pass VS Code tools through as OpenAI-style functions."
+              },
+              "stream": {
+                "type": "boolean",
+                "default": true,
+                "description": "Send stream=true and treat SSE responses as incremental output."
+              },
+              "sendModelInBody": {
+                "type": "boolean",
+                "default": false,
+                "description": "For openai-chat models, send requestModel in the JSON body as model. Other protocols may still send their model field when required."
+              },
+              "apiKeySecretKey": {
+                "type": "string",
+                "description": "Secret storage key used for this model. Defaults to kieChatProvider.defaultApiKeySecretKey."
+              },
+              "authHeader": {
+                "type": "string",
+                "default": "Authorization",
+                "description": "Header name used for auth, for example Authorization or x-api-key."
+              },
+              "authScheme": {
+                "type": "string",
+                "default": "Bearer",
+                "description": "Prefix added before the stored secret value. Use an empty string for raw api-key headers."
+              },
+              "extraHeaders": {
+                "type": "object",
+                "default": {},
+                "additionalProperties": {
+                  "type": "string"
+                },
+                "description": "Extra headers attached to every upstream call for this model."
+              },
+              "extraBody": {
+                "type": "object",
+                "default": {},
+                "additionalProperties": true,
+                "description": "Extra JSON fields merged into the upstream request body."
+              }
+            }
+          }
+        },
+        "kieChatProvider.defaultApiKeySecretKey": {
+          "type": "string",
+          "default": "kieChatProvider.apiKey",
+          "description": "Default secret storage key used by model entries that do not provide apiKeySecretKey."
+        },
+        "kieChatProvider.endpoint": {
+          "type": "string",
+          "default": "https://api.kie.ai/gemini-3.1-pro/v1/chat/completions",
+          "markdownDescription": "Legacy single-model fallback. Used only when built-in KIE models are disabled and `kieChatProvider.models` is empty."
+        },
+        "kieChatProvider.modelId": {
+          "type": "string",
+          "default": "gemini-3.1-pro",
+          "markdownDescription": "Legacy single-model fallback. Used as the picker id and as the request body model when `sendModelInBody` is enabled."
+        },
+        "kieChatProvider.displayName": {
+          "type": "string",
+          "default": "Gemini 3.1 Pro (KIE)",
+          "description": "Legacy single-model fallback display name."
+        },
+        "kieChatProvider.family": {
+          "type": "string",
+          "default": "gemini",
+          "description": "Legacy single-model fallback family metadata."
+        },
+        "kieChatProvider.vendorVersion": {
+          "type": "string",
+          "default": "1.0.0",
+          "description": "Legacy single-model fallback version metadata."
+        },
+        "kieChatProvider.maxInputTokens": {
+          "type": "number",
+          "default": 131072,
+          "minimum": 1,
+          "description": "Legacy single-model fallback max input token count."
+        },
+        "kieChatProvider.maxOutputTokens": {
+          "type": "number",
+          "default": 8192,
+          "minimum": 1,
+          "description": "Legacy single-model fallback max output token count."
+        },
+        "kieChatProvider.enableVision": {
+          "type": "boolean",
+          "default": true,
+          "description": "Legacy single-model fallback for image input support."
+        },
+        "kieChatProvider.enableTools": {
+          "type": "boolean",
+          "default": true,
+          "description": "Legacy single-model fallback for tool-calling support."
+        },
+        "kieChatProvider.includeThoughts": {
+          "type": "boolean",
+          "default": true,
+          "description": "Legacy single-model fallback. Adds include_thoughts=true to the request body."
+        },
+        "kieChatProvider.reasoningEffort": {
+          "type": "string",
+          "default": "high",
+          "enum": [
+            "none",
+            "low",
+            "medium",
+            "high"
+          ],
+          "description": "Legacy single-model fallback. Adds reasoning_effort to the request body."
+        },
+        "kieChatProvider.sendModelInBody": {
+          "type": "boolean",
+          "default": false,
+          "description": "Legacy single-model fallback. Sends modelId in the request body."
+        },
+        "kieChatProvider.extraHeaders": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Legacy single-model fallback extra headers."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -watch -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.50",
+    "@types/vscode": "^1.104.0",
+    "typescript": "^5.8.3"
+  }
+}

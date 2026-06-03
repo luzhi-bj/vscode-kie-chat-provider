@@ -2,7 +2,7 @@
   "name": "vscode-kie-chat-provider",
   "displayName": "KIE Chat Provider",
   "description": "Add built-in KIE chat models and custom OpenAI-compatible models to the Copilot chat model picker.",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "publisher": "local",
   "private": true,
   "engines": {

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.3
+
+- Added the built-in KIE Claude Opus 4.8 model.
+
 ## 0.0.1
 
 - Initial scaffold for a VS Code language model chat provider.

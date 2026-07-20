@@ -259,11 +259,13 @@
   "scripts": {
     "vscode:prepublish": "npm run compile",
     "compile": "tsc -p ./",
+    "package": "vsce package --out out/vscode-kie-chat-provider.vsix",
     "watch": "tsc -watch -p ./"
   },
   "devDependencies": {
     "@types/node": "^20.17.50",
     "@types/vscode": "^1.104.0",
+    "@vscode/vsce": "^3.9.2",
     "typescript": "^5.8.3"
   }
 }

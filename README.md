@@ -9,7 +9,7 @@ It now ships with the current KIE chat model catalog from the official KIE marke
 When `kieChatProvider.includeBuiltInKieModels` is `true`, the extension exposes these KIE models by default:
 
 - GPT: `gpt-5-2`, `gpt-5-4`
-- Claude: `claude-haiku-4-5`, `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-8`, `claude-sonnet-4-5`, `claude-sonnet-4-6`
+- Claude: `claude-haiku-4-5`, `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-7`, `claude-opus-4-8`, `claude-fable-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`, `claude-sonnet-5`
 - Gemini: `gemini-2.5-pro`, `gemini-3-pro`, `gemini-3.1-pro`, `gemini-2.5-flash`, `gemini-3-flash`, `gemini-3-flash-v1betamodels`
 - Codex: `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.2-codex`, `gpt-5.3-codex`
 
@@ -40,8 +40,8 @@ For VS Code BYOK / provider-extension usage, a protocol-aware direct provider is
 ## Setup
 
 1. Run `npm install`.
-2. Open this folder in VS Code.
-3. Press `F5` to launch the Extension Development Host.
+2. Run `npm run package` to compile and package the extension as `out/vscode-kie-chat-provider.vsix`.
+3. To test from source instead, open this folder in VS Code and press `F5` to launch the Extension Development Host.
 4. Run `KIE Chat Provider: Configure Credential` from the Command Palette.
 5. Open the Copilot model picker and choose a KIE model.
 
@@ -131,6 +131,7 @@ If a custom entry uses the same `id` as a built-in model, the custom entry wins:
 - `requestModel` is used when the selected protocol needs a `model` field.
 - `extraBody` is the easiest way to pass provider-specific fields such as `reasoning`, `reasoning_effort`, `thinkingFlag`, or `generationConfig`.
 - Built-in Claude models now treat top-level `cache_control: { "type": "ephemeral" }` as an automatic prompt-caching hint and expand it onto Claude cacheable blocks before the request is sent.
+- KIE documents Claude Fable 5 as not supporting function calls, so the extension does not advertise tool calling for that model.
 - If you disable the built-in catalog and leave `kieChatProvider.models` empty, the extension falls back to the original single-model legacy settings.
 
 ## Settings

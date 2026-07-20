@@ -1,5 +1,1 @@
-.gitignore
-src/**
-tsconfig.json
-**/*.map
-**/*.ts
+out/*.vsix

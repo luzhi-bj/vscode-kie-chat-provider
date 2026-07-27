@@ -1,9 +1,11 @@
 # Changelog
 
-## Unreleased
+## 0.0.5
 
 - Added the built-in KIE Claude Opus 4.7, Claude Fable 5, and Claude Sonnet 5 models.
 - Disabled tool calling for Claude Fable 5 to match KIE's documented capabilities.
+- Added the built-in KIE GPT 5.5, GPT 5.6 Luna, GPT 5.6 Terra, and GPT 5.6 Sol models.
+- Added automatic Responses API tool selection when function tools are available.
 
 ## 0.0.3
 

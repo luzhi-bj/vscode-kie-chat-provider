@@ -563,9 +563,8 @@ export class KieChatModelProvider
     const tools = this.convertToolsToResponses(options, modelConfig);
     if (tools.length > 0) {
       body.tools = tools;
-      if (options.toolMode === vscode.LanguageModelChatToolMode.Required) {
-        body.tool_choice = 'required';
-      }
+      body.tool_choice =
+        options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto';
     }
 
     return body;

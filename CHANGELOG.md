@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.6
+
+- Added the built-in KIE Claude Opus 5 model.
+
 ## 0.0.5
 
 - Added the built-in KIE Claude Opus 4.7, Claude Fable 5, and Claude Sonnet 5 models.

@@ -536,25 +536,31 @@ async function parseResponsesResponse(
   token: vscode.CancellationToken
 ): Promise<void> {
   if (!isEventStream(response)) {
-    emitResponsesPayload(asJson(await response.json()), progress, new Set());
+    emitResponsesPayload(asJson(await response.json()), progress, new Set(), true);
     return;
   }
   const emitted = new Set<string>();
   const argDeltas = new Map<string, string>();
+  let emittedText = false;
   for await (const event of sse(response, token)) {
     const json = parseJson(event.data);
     const type = string(json.type) || event.event;
     if (type === 'response.output_text.delta' && typeof json.delta === 'string') {
       progress.report(new vscode.LanguageModelTextPart(json.delta));
+      emittedText = true;
     } else if (type === 'response.function_call_arguments.delta') {
       const key = string(json.call_id) || string(json.item_id);
       if (key && typeof json.delta === 'string') {
         argDeltas.set(key, (argDeltas.get(key) ?? '') + json.delta);
       }
     } else if (type === 'response.output_item.done') {
-      emitResponseItem(asJson(json.item), progress, emitted, argDeltas);
+      emittedText =
+        emitResponseItem(asJson(json.item), progress, emitted, argDeltas, !emittedText) ||
+        emittedText;
     } else if (type === 'response.completed') {
-      emitResponsesPayload(asJson(json.response), progress, emitted);
+      emittedText =
+        emitResponsesPayload(asJson(json.response), progress, emitted, !emittedText) ||
+        emittedText;
     }
   }
 }
@@ -694,24 +700,38 @@ function emitIndexedCalls(
 function emitResponsesPayload(
   payload: Json,
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-  emitted: Set<string>
-): void {
+  emitted: Set<string>,
+  allowText: boolean
+): boolean {
   const normalized = Object.keys(asJson(payload.data)).length ? asJson(payload.data) : payload;
   const output = asArray(normalized.output ?? asJson(normalized.response).output);
-  for (const item of output) emitResponseItem(asJson(item), progress, emitted, new Map());
+  let emittedText = false;
+  for (const item of output) {
+    emittedText =
+      emitResponseItem(asJson(item), progress, emitted, new Map(), allowText && !emittedText) ||
+      emittedText;
+  }
+  return emittedText;
 }
 
 function emitResponseItem(
   item: Json,
   progress: vscode.Progress<vscode.LanguageModelResponsePart>,
   emitted: Set<string>,
-  deltas: Map<string, string>
-): void {
+  deltas: Map<string, string>,
+  allowText: boolean
+): boolean {
+  let emittedText = false;
   if (item.type === 'message') {
     for (const part of asArray(item.content)) {
       const content = asJson(part);
-      if (content.type === 'output_text' && typeof content.text === 'string') {
+      if (
+        allowText &&
+        content.type === 'output_text' &&
+        typeof content.text === 'string'
+      ) {
         progress.report(new vscode.LanguageModelTextPart(content.text));
+        emittedText = true;
       }
     }
   } else if (item.type === 'function_call') {
@@ -724,6 +744,7 @@ function emitResponseItem(
       emitted.add(callId);
     }
   }
+  return emittedText;
 }
 
 function emitClaudeContent(

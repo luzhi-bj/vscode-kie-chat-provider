@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.0.31
+
+- Deduplicate Responses text repeated across delta, output-item-done, and response-completed events.
+- Use completed response text only as a fallback when no streaming text delta was received.
+
 ## 0.0.30
 
 - Remove unsupported top-level Claude `cache_control` before sending requests.

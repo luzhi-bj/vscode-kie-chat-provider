@@ -1,5 +1,19 @@
 # KIE Chat Provider
 
+The provider follows the official VS Code `LanguageModelChatProvider` contract. Copilot owns
+tool execution; this extension only translates request messages and reports streamed
+`LanguageModelTextPart` and `LanguageModelToolCallPart` values.
+
+Build and verify:
+
+```bash
+npm install
+npm test
+npm run package
+```
+
+The packaged extension is written to `out/vscode-kie-chat-provider.vsix`.
+
 This VS Code extension contributes a multi-model provider to the Copilot model picker by using the `LanguageModelChatProvider` API introduced in VS Code `1.104`.
 
 It now ships with the current KIE chat model catalog from the official KIE market docs, and it can also layer in your own custom OpenAI-compatible models.
@@ -160,3 +174,9 @@ If a custom entry uses the same `id` as a built-in model, the custom entry wins:
 - The extension streams SSE responses from OpenAI-compatible, Claude, responses-style, and native Gemini upstreams.
 - VS Code tool definitions are translated into the format required by each upstream protocol.
 - Credentials are stored in VS Code secret storage, not in settings.
+
+## Troubleshooting Copilot MCP tools
+
+GitHub Copilot starts MCP tool servers independently from this KIE model provider. An error such as `microsoft.githubcopilot.upgrade.mcp...nupkg is being used by another process` means the Copilot Upgrade MCP server failed while NuGet was installing or reading its package; it is not a KIE API error.
+
+Run `Developer: Reload Window` and retry after the MCP package installation has finished. If the error persists, stop duplicate `dotnet`/`dnx` instances for that MCP server or update the GitHub Copilot extension. KIE Chat Provider 0.0.7 now reports an explicit provider error when KIE itself finishes without returning text or a tool call.

@@ -6,296 +6,65 @@ import {
   KieProviderModel,
   KieSecretTarget,
 } from './settings';
+import { SseDecoder, SseEvent } from './sse';
 
-type OpenAIContentPart =
-  | {
-      type: 'text';
-      text: string;
-    }
-  | {
-      type: 'image_url';
-      image_url: {
-        url: string;
-      };
-    };
+type Json = Record<string, unknown>;
+type UpstreamRequest = { body: Json; parse: StreamParser };
+type StreamParser = (
+  response: Response,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  token: vscode.CancellationToken
+) => Promise<void>;
 
-type OpenAIToolCall = {
-  id: string;
-  type: 'function';
-  function: {
-    name: string;
-    arguments: string;
-  };
-};
-
-type OpenAIMessage = {
-  role: 'system' | 'user' | 'assistant' | 'tool';
-  content?: string | OpenAIContentPart[] | null;
-  tool_calls?: OpenAIToolCall[];
-  tool_call_id?: string;
-  name?: string;
-};
-
-type OpenAIRequestTool = {
-  type: 'function';
-  function: {
-    name: string;
-    description?: string;
-    parameters?: unknown;
-  };
-};
-
-type ResponsesInputPart =
-  | {
-      type: 'input_text';
-      text: string;
-    }
-  | {
-      type: 'input_image';
-      image_url: string;
-    }
-  | {
-      type: 'input_file';
-      file_url: string;
-    }
-  | {
-      type: 'function_call';
-      call_id: string;
-      name: string;
-      arguments: string;
-    }
-  | {
-      type: 'function_call_output';
-      call_id: string;
-      output: string;
-    };
-
-type ResponsesInputMessage = {
-  role: 'system' | 'user' | 'assistant';
-  content: ResponsesInputPart[];
-};
-
-type ClaudeContentPart =
-  | {
-      type: 'text';
-      text: string;
-      cache_control?: ClaudeCacheControl;
-    }
-  | {
-      type: 'image';
-      source: {
-        type: 'url';
-        url: string;
-      };
-      cache_control?: ClaudeCacheControl;
-    }
-  | {
-      type: 'tool_use';
-      id: string;
-      name: string;
-      input: object;
-      cache_control?: ClaudeCacheControl;
-    }
-  | {
-      type: 'tool_result';
-      tool_use_id: string;
-      content: string;
-      cache_control?: ClaudeCacheControl;
-    };
-
-type ClaudeMessage = {
-  role: 'user' | 'assistant';
-  content: ClaudeContentPart[];
-};
-
-type ClaudeCacheControl = {
-  type: 'ephemeral';
-  ttl?: '5m' | '1h';
-};
-
-type ClaudeTool = {
-  name: string;
-  description?: string;
-  input_schema?: unknown;
-  cache_control?: ClaudeCacheControl;
-};
-
-type ClaudeSystemBlock = {
-  type: 'text';
-  text: string;
-  cache_control?: ClaudeCacheControl;
-};
-
-type GeminiPart =
-  | { text: string }
-  | { file_data: { mime_type: string; file_uri: string } }
-  | { inlineData: { mimeType: string; data: string } }
-  | { functionCall: { name: string; args: object } }
-  | { functionResponse: { name: string; response: object } };
-
-type GeminiMessage = {
-  role: 'user' | 'model';
-  parts: GeminiPart[];
-};
-
-type ToolCallRecord = {
-  callId: string;
-  name: string;
-  input: object;
-};
-
-type OpenAIChatResponse = {
-  error?: {
-    message?: string;
-  };
-  choices?: Array<{
-    finish_reason?: string | null;
-    message?: {
-      content?: string | Array<{ type?: string; text?: string }>;
-      tool_calls?: OpenAIToolCall[];
-    };
-    delta?: {
-      content?: string | Array<{ type?: string; text?: string }>;
-      tool_calls?: Array<{
-        index?: number;
-        id?: string;
-        type?: 'function';
-        function?: {
-          name?: string;
-          arguments?: string;
-        };
-      }>;
-    };
-  }>;
-};
-
-type ResponsesApiResponse = {
-  error?: {
-    message?: string;
-  };
-  output?: Array<{
-    type?: string;
-    call_id?: string;
-    name?: string;
-    arguments?: string;
-    content?: Array<{
-      type?: string;
-      text?: string;
-    }>;
-  }>;
-  response?: {
-    output?: Array<{
-      type?: string;
-      call_id?: string;
-      name?: string;
-      arguments?: string;
-      content?: Array<{
-        type?: string;
-        text?: string;
-      }>;
-    }>;
-  };
-};
-
-type ClaudeResponse = {
-  error?: {
-    message?: string;
-  };
-  content?: Array<{
-    type?: string;
-    text?: string;
-    id?: string;
-    name?: string;
-    input?: object;
-  }>;
-  response?: {
-    content?: Array<{
-      type?: string;
-      text?: string;
-      id?: string;
-      name?: string;
-      input?: object;
-    }>;
-  };
-};
-
-type GeminiResponse = {
-  error?: {
-    message?: string;
-  };
-  candidates?: Array<{
-    finishReason?: string;
-    content?: {
-      parts?: Array<{
-        text?: string;
-        thought?: boolean;
-        functionCall?: {
-          id?: string;
-          name?: string;
-          args?: object;
-        };
-      }>;
-    };
-  }>;
-  response?: {
-    candidates?: Array<{
-      finishReason?: string;
-      content?: {
-        parts?: Array<{
-          text?: string;
-          thought?: boolean;
-          functionCall?: {
-            id?: string;
-            name?: string;
-            args?: object;
-          };
-        }>;
-      };
-    }>;
-  };
-};
-
+/**
+ * VS Code/Copilot bridge. This class owns provider lifecycle and credentials only.
+ * Every request is converted and parsed by a stateless protocol adapter.
+ */
 export class KieChatModelProvider
   implements vscode.LanguageModelChatProvider, vscode.Disposable
 {
-  private readonly onDidChangeEmitter = new vscode.EventEmitter<void>();
-  readonly onDidChangeLanguageModelChatInformation = this.onDidChangeEmitter.event;
-  private readonly configurationWatcher: vscode.Disposable;
-  private readonly toolNameByCallId = new Map<string, string>();
+  private readonly changeEmitter = new vscode.EventEmitter<void>();
+  readonly onDidChangeLanguageModelChatInformation = this.changeEmitter.event;
 
-  constructor(private readonly context: vscode.ExtensionContext) {
-    this.configurationWatcher = vscode.workspace.onDidChangeConfiguration((event) => {
-      if (event.affectsConfiguration('kieChatProvider')) {
-        this.onDidChangeEmitter.fire();
-      }
-    });
-  }
+  constructor(private readonly context: vscode.ExtensionContext) {}
 
   dispose(): void {
-    this.configurationWatcher.dispose();
-    this.onDidChangeEmitter.dispose();
+    this.changeEmitter.dispose();
   }
 
   async provideLanguageModelChatInformation(
     options: { silent: boolean },
-    token: vscode.CancellationToken
+    _token: vscode.CancellationToken
   ): Promise<vscode.LanguageModelChatInformation[]> {
-    if (token.isCancellationRequested) {
-      return [];
-    }
-
-    let models = getEffectiveModelConfigs();
-    let availableModels = await this.getModelsWithCredentials(models);
-
-    if (availableModels.length === 0 && !options.silent) {
-      const configured = await this.promptForApiKey();
-      if (configured) {
-        models = getEffectiveModelConfigs();
-        availableModels = await this.getModelsWithCredentials(models);
+    const models = getEffectiveModelConfigs();
+    const available: KieProviderModel[] = [];
+    for (const model of models) {
+      if (await this.context.secrets.get(model.apiKeySecretKey)) {
+        available.push(model);
       }
     }
 
-    return availableModels.map((model) => this.toChatInformation(model));
+    if (available.length === 0 && !options.silent) {
+      const configured = await this.promptForApiKey();
+      if (configured) {
+        return this.provideLanguageModelChatInformation({ silent: true }, _token);
+      }
+    }
+
+    return available.map((model) => ({
+      id: model.id,
+      name: model.displayName,
+      family: model.family,
+      version: model.vendorVersion,
+      tooltip: model.tooltip,
+      detail: model.detail,
+      maxInputTokens: model.maxInputTokens,
+      maxOutputTokens: model.maxOutputTokens,
+      capabilities: {
+        imageInput: model.enableVision,
+        toolCalling: model.enableTools,
+      },
+    }));
   }
 
   async provideLanguageModelChatResponse(
@@ -305,56 +74,43 @@ export class KieChatModelProvider
     progress: vscode.Progress<vscode.LanguageModelResponsePart>,
     token: vscode.CancellationToken
   ): Promise<void> {
-    const modelConfig = this.getModelConfig(model.id);
-    const apiKey = await this.getApiKeyOrThrow(modelConfig);
-    const body = this.buildRequestBody(modelConfig, messages, options);
-    const abortController = new AbortController();
-    const cancellationSubscription = token.onCancellationRequested(() => abortController.abort());
+    const config = this.findModel(model.id);
+    const apiKey = await this.context.secrets.get(config.apiKeySecretKey);
+    if (!apiKey) {
+      throw new Error(
+        `Missing credential for ${config.displayName}. Run "KIE Chat Provider: Configure Credential".`
+      );
+    }
 
+    const request = createUpstreamRequest(config, messages, options);
+    const controller = new AbortController();
+    const cancellation = token.onCancellationRequested(() => controller.abort());
     try {
-      const response = await fetch(modelConfig.endpoint, {
+      const response = await fetch(config.endpoint, {
         method: 'POST',
-        headers: this.buildHeaders(apiKey, modelConfig),
-        body: JSON.stringify(body),
-        signal: abortController.signal,
+        headers: createHeaders(config, apiKey),
+        body: JSON.stringify(request.body),
+        signal: controller.signal,
       });
-
       if (!response.ok) {
-        throw new Error(await this.getErrorMessage(response));
+        throw new Error(await readHttpError(response));
       }
-
-      const contentType = response.headers.get('content-type') ?? '';
-      if (modelConfig.stream && contentType.includes('text/event-stream')) {
-        await this.consumeStreamingResponse(modelConfig.protocol, response, progress, token);
-        return;
-      }
-
-      const payload = await response.json();
-      this.reportNonStreamingResponse(modelConfig.protocol, payload, progress);
+      await request.parse(response, progress, token);
     } finally {
-      cancellationSubscription.dispose();
+      cancellation.dispose();
     }
   }
 
   async provideTokenCount(
     _model: vscode.LanguageModelChatInformation,
-    text: string | vscode.LanguageModelChatRequestMessage,
+    input: string | vscode.LanguageModelChatRequestMessage,
     _token: vscode.CancellationToken
   ): Promise<number> {
-    const rawText =
-      typeof text === 'string'
-        ? text
-        : text.content
-            .map((part) => {
-              if (part instanceof vscode.LanguageModelTextPart) {
-                return part.value;
-              }
-
-              return JSON.stringify(part);
-            })
-            .join('\n');
-
-    return Math.max(1, Math.ceil(rawText.length / 4));
+    const text =
+      typeof input === 'string'
+        ? input
+        : input.content.map((part) => partToText(part)).join('\n');
+    return Math.max(1, Math.ceil(text.length / 4));
   }
 
   async promptForApiKey(secretKey?: string): Promise<boolean> {
@@ -362,1537 +118,741 @@ export class KieChatModelProvider
     if (!target) {
       return false;
     }
-
-    const existingValue = await this.context.secrets.get(target.secretKey);
-    const apiKey = await vscode.window.showInputBox({
+    const current = await this.context.secrets.get(target.secretKey);
+    const value = await vscode.window.showInputBox({
       ignoreFocusOut: true,
       password: true,
-      prompt:
-        target.modelCount === 1
-          ? `Enter the credential for ${target.label}.`
-          : `Enter the shared credential for ${target.modelCount} models.`,
-      placeHolder: 'sk-...',
-      value: existingValue ?? '',
-      validateInput: (value) =>
-        value.trim().length === 0 ? 'A credential value is required before the model can be used.' : null,
+      prompt: `Enter credential for ${target.label}.`,
+      value: current ?? '',
+      validateInput: (candidate) =>
+        candidate.trim() ? null : 'A credential is required.',
     });
-
-    if (!apiKey) {
+    if (!value) {
       return false;
     }
-
-    await this.context.secrets.store(target.secretKey, apiKey.trim());
-    this.onDidChangeEmitter.fire();
-    void vscode.window.showInformationMessage(`Saved credential for ${target.label}.`);
+    await this.context.secrets.store(target.secretKey, value.trim());
+    this.changeEmitter.fire();
     return true;
   }
 
   async clearApiKey(secretKey?: string): Promise<void> {
-    const target = await this.pickSecretTarget(secretKey, 'Select which credential to clear.');
+    const target = await this.pickSecretTarget(secretKey, 'Select credential to clear.');
     if (!target) {
       return;
     }
-
     await this.context.secrets.delete(target.secretKey);
-    this.onDidChangeEmitter.fire();
-    void vscode.window.showInformationMessage(`Cleared credential for ${target.label}.`);
+    this.changeEmitter.fire();
+  }
+
+  private findModel(id: string): KieProviderModel {
+    const model = getEffectiveModelConfigs().find((candidate) => candidate.id === id);
+    if (!model) {
+      throw new Error(`KIE model "${id}" is no longer configured.`);
+    }
+    return model;
   }
 
   private async pickSecretTarget(
     secretKey?: string,
-    placeHolder = 'Select which credential to configure.'
+    placeHolder = 'Select credential to configure.'
   ): Promise<KieSecretTarget | undefined> {
     const targets = getSecretTargets(getEffectiveModelConfigs());
-    if (targets.length === 0) {
-      return undefined;
-    }
-
     if (secretKey) {
       return targets.find((target) => target.secretKey === secretKey);
     }
-
-    if (targets.length === 1) {
+    if (targets.length <= 1) {
       return targets[0];
     }
+    const selected = await vscode.window.showQuickPick(
+      targets.map((target) => ({
+        label: target.label,
+        description: target.description,
+        detail: target.detail,
+        target,
+      })),
+      { placeHolder, ignoreFocusOut: true }
+    );
+    return selected?.target;
+  }
+}
 
-    return vscode.window
-      .showQuickPick(
-        targets.map((target) => ({
-          label: target.label,
-          description: target.description,
-          detail: target.detail,
-          target,
-        })),
-        {
-          placeHolder,
-          ignoreFocusOut: true,
+function createUpstreamRequest(
+  model: KieProviderModel,
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): UpstreamRequest {
+  switch (model.protocol) {
+    case 'claude':
+      return {
+        body: buildClaudeBody(model, messages, options),
+        parse: parseClaudeResponse,
+      };
+    case 'openai-responses':
+      return {
+        body: buildResponsesBody(model, messages, options),
+        parse: parseResponsesResponse,
+      };
+    case 'gemini':
+      return {
+        body: buildGeminiBody(model, messages, options),
+        parse: parseGeminiResponse,
+      };
+    case 'openai-chat':
+    default:
+      return {
+        body: buildOpenAIChatBody(model, messages, options),
+        parse: parseOpenAIChatResponse,
+      };
+  }
+}
+
+function createHeaders(model: KieProviderModel, apiKey: string): Record<string, string> {
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...model.extraHeaders,
+  };
+  if (model.authHeader) {
+    headers[model.authHeader] = model.authScheme
+      ? `${model.authScheme} ${apiKey}`
+      : apiKey;
+  }
+  return headers;
+}
+
+function buildOpenAIChatBody(
+  model: KieProviderModel,
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json {
+  const converted: Json[] = [];
+  for (const message of messages) {
+    const role = roleName(message.role);
+    const text: Json[] = [];
+    const toolCalls: Json[] = [];
+    for (const part of message.content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        text.push({ type: 'text', text: part.value });
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        toolCalls.push({
+          id: part.callId,
+          type: 'function',
+          function: { name: part.name, arguments: JSON.stringify(part.input ?? {}) },
+        });
+      } else if (part instanceof vscode.LanguageModelToolResultPart) {
+        converted.push({
+          role: 'tool',
+          tool_call_id: part.callId,
+          content: toolResultText(part),
+        });
+      } else {
+        const image = imageUrl(part);
+        if (image) {
+          text.push({ type: 'image_url', image_url: { url: image } });
+        } else {
+          text.push({ type: 'text', text: partToText(part) });
         }
-      )
-      .then((item) => item?.target);
-  }
-
-  private async getModelsWithCredentials(
-    models: readonly KieProviderModel[]
-  ): Promise<KieProviderModel[]> {
-    const availableModels: KieProviderModel[] = [];
-
-    for (const model of models) {
-      const apiKey = await this.context.secrets.get(model.apiKeySecretKey);
-      if (apiKey) {
-        availableModels.push(model);
       }
     }
-
-    return availableModels;
-  }
-
-  private getModelConfig(modelId: string): KieProviderModel {
-    const modelConfig = getEffectiveModelConfigs().find((entry) => entry.id === modelId);
-    if (!modelConfig) {
-      throw new Error(`Model "${modelId}" is no longer configured in kieChatProvider.`);
+    if (toolCalls.length) {
+      converted.push({ role: 'assistant', content: text.length ? text : null, tool_calls: toolCalls });
+    } else if (text.length) {
+      converted.push({ role, content: text });
     }
-
-    return modelConfig;
   }
-
-  private async getApiKeyOrThrow(modelConfig: KieProviderModel): Promise<string> {
-    const apiKey = await this.context.secrets.get(modelConfig.apiKeySecretKey);
-    if (!apiKey) {
-      throw new Error(
-        `Missing credential for ${modelConfig.displayName}. Run "KIE Chat Provider: Configure Credential" first.`
-      );
-    }
-
-    return apiKey;
+  const body: Json = { ...model.extraBody, messages: converted };
+  if (model.stream) body.stream = true;
+  if (model.sendModelInBody) body.model = model.requestModel;
+  const tools = openAITools(model, options);
+  if (tools.length) {
+    body.tools = tools;
+    body.tool_choice =
+      options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto';
   }
+  return body;
+}
 
-  private toChatInformation(model: KieProviderModel): vscode.LanguageModelChatInformation {
-    return {
-      id: model.id,
-      name: model.displayName,
-      family: model.family,
-      version: model.vendorVersion,
-      maxInputTokens: model.maxInputTokens,
-      maxOutputTokens: model.maxOutputTokens,
-      tooltip: model.tooltip,
-      detail: model.detail,
-      capabilities: {
-        imageInput: model.enableVision,
-        toolCalling: model.enableTools,
-      },
+function buildResponsesBody(
+  model: KieProviderModel,
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json {
+  const input: Json[] = [];
+  for (const message of messages) {
+    const role = roleName(message.role);
+    const textType = role === 'assistant' ? 'output_text' : 'input_text';
+    const content: Json[] = [];
+    const flush = () => {
+      if (content.length) input.push({ role, content: content.splice(0) });
     };
-  }
-
-  private buildHeaders(apiKey: string, modelConfig: KieProviderModel): Record<string, string> {
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...modelConfig.extraHeaders,
-    };
-
-    if (modelConfig.authHeader) {
-      headers[modelConfig.authHeader] = modelConfig.authScheme
-        ? `${modelConfig.authScheme} ${apiKey}`
-        : apiKey;
-    }
-
-    return headers;
-  }
-
-  private buildRequestBody(
-    modelConfig: KieProviderModel,
-    messages: readonly vscode.LanguageModelChatRequestMessage[],
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): Record<string, unknown> {
-    switch (modelConfig.protocol) {
-      case 'openai-responses':
-        return this.buildResponsesRequest(modelConfig, messages, options);
-      case 'claude':
-        return this.buildClaudeRequest(modelConfig, messages, options);
-      case 'gemini':
-        return this.buildGeminiRequest(modelConfig, messages, options);
-      case 'openai-chat':
-      default:
-        return this.buildOpenAIChatRequest(modelConfig, messages, options);
-    }
-  }
-
-  private buildOpenAIChatRequest(
-    modelConfig: KieProviderModel,
-    messages: readonly vscode.LanguageModelChatRequestMessage[],
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      ...modelConfig.extraBody,
-      messages: this.convertMessagesToOpenAIChat(messages),
-    };
-
-    if (modelConfig.stream) {
-      body.stream = true;
-    }
-
-    if (modelConfig.sendModelInBody) {
-      body.model = modelConfig.requestModel;
-    }
-
-    const tools = this.convertToolsToOpenAI(options, modelConfig);
-    if (tools.length > 0) {
-      body.tools = tools;
-      if (options.toolMode === vscode.LanguageModelChatToolMode.Required) {
-        body.tool_choice = 'required';
+    for (const part of message.content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        content.push({ type: textType, text: part.value });
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        flush();
+        input.push({
+          type: 'function_call',
+          call_id: part.callId,
+          name: part.name,
+          arguments: JSON.stringify(part.input ?? {}),
+        });
+      } else if (part instanceof vscode.LanguageModelToolResultPart) {
+        flush();
+        input.push({
+          type: 'function_call_output',
+          call_id: part.callId,
+          output: toolResultText(part),
+        });
+      } else {
+        content.push({ type: textType, text: partToText(part) });
       }
     }
-
-    return body;
+    flush();
   }
-
-  private buildResponsesRequest(
-    modelConfig: KieProviderModel,
-    messages: readonly vscode.LanguageModelChatRequestMessage[],
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): Record<string, unknown> {
-    const body: Record<string, unknown> = {
-      ...modelConfig.extraBody,
-      model: modelConfig.requestModel,
-      input: this.convertMessagesToResponses(messages),
-    };
-
-    if (modelConfig.stream) {
-      body.stream = true;
-    }
-
-    const tools = this.convertToolsToResponses(options, modelConfig);
-    if (tools.length > 0) {
-      body.tools = tools;
-      body.tool_choice =
-        options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto';
-    }
-
-    return body;
+  const body: Json = {
+    ...model.extraBody,
+    model: model.requestModel,
+    input,
+  };
+  if (model.stream) body.stream = true;
+  const tools = responseTools(model, options);
+  if (tools.length) {
+    body.tools = tools;
+    body.tool_choice =
+      options.toolMode === vscode.LanguageModelChatToolMode.Required ? 'required' : 'auto';
   }
+  return body;
+}
 
-  private buildClaudeRequest(
-    modelConfig: KieProviderModel,
-    messages: readonly vscode.LanguageModelChatRequestMessage[],
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): Record<string, unknown> {
-    const { system, messages: claudeMessages } = this.convertMessagesToClaude(messages);
-    const extraBody = this.normalizeLooseObject(modelConfig.extraBody);
-    const cacheControl = this.readClaudeTopLevelCacheControl(extraBody.cache_control);
-    delete extraBody.cache_control;
-
-    const body: Record<string, unknown> = {
-      ...extraBody,
-      model: modelConfig.requestModel,
-      messages: claudeMessages,
-    };
-
-    if (modelConfig.stream) {
-      body.stream = true;
+function buildClaudeBody(
+  model: KieProviderModel,
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json {
+  const extraBody = { ...model.extraBody };
+  const cacheControl = asJson(extraBody.cache_control);
+  delete extraBody.cache_control;
+  const system: string[] = [];
+  const converted: Json[] = [];
+  for (const message of messages) {
+    if (
+      message.role !== vscode.LanguageModelChatMessageRole.User &&
+      message.role !== vscode.LanguageModelChatMessageRole.Assistant
+    ) {
+      system.push(message.content.map(partToText).join('\n'));
+      continue;
     }
-
-    const tools = this.convertToolsToClaude(options, modelConfig);
-    if (tools.length > 0) {
-      body.tools = tools;
+    const role =
+      message.role === vscode.LanguageModelChatMessageRole.Assistant ? 'assistant' : 'user';
+    const content: Json[] = [];
+    for (const part of message.content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        content.push({ type: 'text', text: part.value });
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        content.push({ type: 'tool_use', id: part.callId, name: part.name, input: part.input ?? {} });
+      } else if (part instanceof vscode.LanguageModelToolResultPart) {
+        content.push({
+          type: 'tool_result',
+          tool_use_id: part.callId,
+          content: toolResultText(part),
+        });
+      } else {
+        content.push({ type: 'text', text: partToText(part) });
+      }
     }
-
-    if (system) {
-      body.system = system;
-    }
-
-    if (cacheControl) {
-      this.applyAutomaticClaudeCacheControl(body, cacheControl);
-    }
-
-    return body;
+    converted.push({ role, content: content.length ? content : [{ type: 'text', text: '' }] });
   }
-
-  private buildGeminiRequest(
-    modelConfig: KieProviderModel,
-    messages: readonly vscode.LanguageModelChatRequestMessage[],
-    options: vscode.ProvideLanguageModelChatResponseOptions
-  ): Record<string, unknown> {
-    const { system, contents } = this.convertMessagesToGemini(messages);
-    const body: Record<string, unknown> = {
-      ...modelConfig.extraBody,
-      contents,
-    };
-
-    if (system) {
-      body.systemInstruction = {
-        parts: [{ text: system }],
+  const body: Json = {
+    ...extraBody,
+    model: model.requestModel,
+    messages: converted,
+  };
+  if (system.length) {
+    body.system =
+      cacheControl.type === 'ephemeral'
+        ? [{ type: 'text', text: system.join('\n\n'), cache_control: cacheControl }]
+        : system.join('\n\n');
+  }
+  if (model.stream) body.stream = true;
+  const tools = claudeTools(model, options);
+  if (tools.length) {
+    if (cacheControl.type === 'ephemeral') {
+      tools[tools.length - 1] = {
+        ...tools[tools.length - 1],
+        cache_control: cacheControl,
       };
     }
-
-    if (modelConfig.stream) {
-      body.stream = true;
-    }
-
-    const tools = this.convertToolsToGemini(options, modelConfig);
-    if (tools.length > 0) {
-      body.tools = tools;
-    }
-
-    return body;
+    body.tools = tools;
   }
+  if (cacheControl.type === 'ephemeral' && converted.length) {
+    const messageIndex = converted.length === 1 ? 0 : converted.length - 2;
+    const message = converted[messageIndex];
+    const content = asArray(message.content);
+    if (content.length) {
+      content[content.length - 1] = {
+        ...asJson(content[content.length - 1]),
+        cache_control: cacheControl,
+      };
+      message.content = content;
+    }
+  }
+  return body;
+}
 
-  private convertMessagesToOpenAIChat(
-    messages: readonly vscode.LanguageModelChatRequestMessage[]
-  ): OpenAIMessage[] {
-    const converted: OpenAIMessage[] = [];
-
-    for (const message of messages) {
-      const role = this.getOpenAiRole(message.role);
-      const textParts: OpenAIContentPart[] = [];
-      const assistantToolCalls: OpenAIToolCall[] = [];
-
-      for (const part of message.content) {
-        if (part instanceof vscode.LanguageModelTextPart) {
-          textParts.push({ type: 'text', text: part.value });
-          continue;
-        }
-
-        if (part instanceof vscode.LanguageModelToolCallPart) {
-          assistantToolCalls.push({
+function buildGeminiBody(
+  model: KieProviderModel,
+  messages: readonly vscode.LanguageModelChatRequestMessage[],
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json {
+  const system: string[] = [];
+  const contents: Json[] = [];
+  for (const message of messages) {
+    if (
+      message.role !== vscode.LanguageModelChatMessageRole.User &&
+      message.role !== vscode.LanguageModelChatMessageRole.Assistant
+    ) {
+      system.push(message.content.map(partToText).join('\n'));
+      continue;
+    }
+    const role =
+      message.role === vscode.LanguageModelChatMessageRole.Assistant ? 'model' : 'user';
+    const parts: Json[] = [];
+    for (const part of message.content) {
+      if (part instanceof vscode.LanguageModelTextPart) {
+        parts.push({ text: part.value });
+      } else if (part instanceof vscode.LanguageModelToolCallPart) {
+        parts.push({ functionCall: { id: part.callId, name: part.name, args: part.input ?? {} } });
+      } else if (part instanceof vscode.LanguageModelToolResultPart) {
+        parts.push({
+          functionResponse: {
             id: part.callId,
-            type: 'function',
-            function: {
-              name: part.name,
-              arguments: JSON.stringify(part.input ?? {}),
-            },
-          });
-          this.rememberToolCall(part.callId, part.name);
-          continue;
-        }
-
-        if (part instanceof vscode.LanguageModelToolResultPart) {
-          converted.push({
-            role: 'tool',
-            tool_call_id: part.callId,
-            content: this.stringifyUnknown(
-              Array.isArray(part.content)
-                ? part.content
-                    .map((item) =>
-                      item instanceof vscode.LanguageModelTextPart
-                        ? item.value
-                        : this.tryReadTextData(item) ?? this.stringifyUnknown(item)
-                    )
-                    .join('\n')
-                : part.content
-            ),
-          });
-          continue;
-        }
-
-        const imageUrl = this.tryReadImageUrl(part);
-        if (imageUrl) {
-          textParts.push({
-            type: 'image_url',
-            image_url: { url: imageUrl },
-          });
-          continue;
-        }
-
-        const inlineText = this.tryReadTextData(part);
-        if (inlineText) {
-          textParts.push({ type: 'text', text: inlineText });
-          continue;
-        }
-
-        textParts.push({ type: 'text', text: this.stringifyUnknown(part) });
-      }
-
-      if (assistantToolCalls.length > 0) {
-        converted.push({
-          role: 'assistant',
-          content: textParts.length > 0 ? textParts : null,
-          tool_calls: assistantToolCalls,
-          name: message.name,
+            name: part.callId,
+            response: { result: toolResultText(part) },
+          },
         });
-        continue;
+      } else {
+        parts.push({ text: partToText(part) });
       }
-
-      converted.push({
-        role,
-        content: textParts,
-        name: message.name,
-      });
     }
-
-    return converted;
+    contents.push({ role, parts });
   }
+  const body: Json = { ...model.extraBody, contents };
+  if (system.length) body.systemInstruction = { parts: [{ text: system.join('\n\n') }] };
+  const declarations = geminiTools(model, options);
+  if (declarations.length) body.tools = [{ functionDeclarations: declarations }];
+  return body;
+}
 
-  private convertMessagesToResponses(
-    messages: readonly vscode.LanguageModelChatRequestMessage[]
-  ): ResponsesInputMessage[] {
-    const converted: ResponsesInputMessage[] = [];
+function openAITools(
+  model: KieProviderModel,
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json[] {
+  if (!model.enableTools) return [];
+  return (options.tools ?? []).map((tool) => ({
+    type: 'function',
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: objectSchema(tool.inputSchema),
+    },
+  }));
+}
 
-    for (const message of messages) {
-      const role = this.getResponsesRole(message.role);
-      const content: ResponsesInputPart[] = [];
+function responseTools(
+  model: KieProviderModel,
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json[] {
+  if (!model.enableTools) return [];
+  return (options.tools ?? []).map((tool) => ({
+    type: 'function',
+    name: tool.name,
+    description: tool.description,
+    parameters: objectSchema(tool.inputSchema),
+  }));
+}
 
-      for (const part of message.content) {
-        if (part instanceof vscode.LanguageModelTextPart) {
-          content.push({ type: 'input_text', text: part.value });
-          continue;
-        }
+function claudeTools(
+  model: KieProviderModel,
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json[] {
+  if (!model.enableTools) return [];
+  return (options.tools ?? []).map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    input_schema: objectSchema(tool.inputSchema),
+  }));
+}
 
-        if (part instanceof vscode.LanguageModelToolCallPart) {
-          content.push({
-            type: 'function_call',
-            call_id: part.callId,
-            name: part.name,
-            arguments: JSON.stringify(part.input ?? {}),
-          });
-          this.rememberToolCall(part.callId, part.name);
-          continue;
-        }
+function geminiTools(
+  model: KieProviderModel,
+  options: vscode.ProvideLanguageModelChatResponseOptions
+): Json[] {
+  if (!model.enableTools) return [];
+  return (options.tools ?? []).map((tool) => ({
+    name: tool.name,
+    description: tool.description,
+    parameters: objectSchema(tool.inputSchema),
+  }));
+}
 
-        if (part instanceof vscode.LanguageModelToolResultPart) {
-          content.push({
-            type: 'function_call_output',
-            call_id: part.callId,
-            output: this.stringifyToolResultPart(part),
-          });
-          continue;
-        }
-
-        const imageUrl = this.tryReadImageUrl(part);
-        if (imageUrl) {
-          content.push({ type: 'input_image', image_url: imageUrl });
-          continue;
-        }
-
-        const fileUrl = this.tryReadFileUrl(part);
-        if (fileUrl) {
-          content.push({ type: 'input_file', file_url: fileUrl });
-          continue;
-        }
-
-        const inlineText = this.tryReadTextData(part);
-        if (inlineText) {
-          content.push({ type: 'input_text', text: inlineText });
-          continue;
-        }
-
-        content.push({ type: 'input_text', text: this.stringifyUnknown(part) });
-      }
-
-      if (content.length === 0) {
-        content.push({ type: 'input_text', text: '' });
-      }
-
-      converted.push({ role, content });
-    }
-
-    return converted;
+async function parseOpenAIChatResponse(
+  response: Response,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  token: vscode.CancellationToken
+): Promise<void> {
+  if (!isEventStream(response)) {
+    const json = asJson(await response.json());
+    const message = asJson(asArray(json.choices)[0]).message;
+    emitOpenAIMessage(asJson(message), progress);
+    return;
   }
-
-  private convertMessagesToClaude(messages: readonly vscode.LanguageModelChatRequestMessage[]): {
-    system: string;
-    messages: ClaudeMessage[];
-  } {
-    const claudeMessages: ClaudeMessage[] = [];
-    const systemParts: string[] = [];
-
-    for (const message of messages) {
-      if (
-        message.role !== vscode.LanguageModelChatMessageRole.User &&
-        message.role !== vscode.LanguageModelChatMessageRole.Assistant
-      ) {
-        const systemText = this.stringifyRequestMessage(message);
-        if (systemText) {
-          systemParts.push(systemText);
-        }
-        continue;
+  const calls = new Map<number, { id: string; name: string; args: string }>();
+  for await (const event of sse(response, token)) {
+    const json = parseJson(event.data);
+    for (const choice of asArray(json.choices)) {
+      const delta = asJson(asJson(choice).delta);
+      if (typeof delta.content === 'string') {
+        progress.report(new vscode.LanguageModelTextPart(delta.content));
       }
-
-      const role =
-        message.role === vscode.LanguageModelChatMessageRole.Assistant ? 'assistant' : 'user';
-      const content: ClaudeContentPart[] = [];
-
-      for (const part of message.content) {
-        if (part instanceof vscode.LanguageModelTextPart) {
-          content.push({ type: 'text', text: part.value });
-          continue;
-        }
-
-        if (part instanceof vscode.LanguageModelToolCallPart) {
-          content.push({
-            type: 'tool_use',
-            id: part.callId,
-            name: part.name,
-            input: this.ensureObject(part.input),
-          });
-          this.rememberToolCall(part.callId, part.name);
-          continue;
-        }
-
-        if (part instanceof vscode.LanguageModelToolResultPart) {
-          content.push({
-            type: 'tool_result',
-            tool_use_id: part.callId,
-            content: this.stringifyToolResultPart(part),
-          });
-          continue;
-        }
-
-        const imageUrl = this.tryReadImageUrl(part);
-        if (imageUrl) {
-          content.push({
-            type: 'image',
-            source: {
-              type: 'url',
-              url: imageUrl,
-            },
-          });
-          continue;
-        }
-
-        const inlineText = this.tryReadTextData(part);
-        if (inlineText) {
-          content.push({ type: 'text', text: inlineText });
-          continue;
-        }
-
-        content.push({ type: 'text', text: this.stringifyUnknown(part) });
+      for (const rawCall of asArray(delta.tool_calls)) {
+        const call = asJson(rawCall);
+        const index = number(call.index);
+        const fn = asJson(call.function);
+        const current = calls.get(index) ?? { id: '', name: '', args: '' };
+        if (typeof call.id === 'string') current.id = call.id;
+        if (typeof fn.name === 'string') current.name = fn.name;
+        if (typeof fn.arguments === 'string') current.args += fn.arguments;
+        calls.set(index, current);
       }
-
-      if (content.length === 0) {
-        content.push({ type: 'text', text: '' });
-      }
-
-      claudeMessages.push({ role, content });
-    }
-
-    return {
-      system: systemParts.join('\n\n'),
-      messages: claudeMessages,
-    };
-  }
-
-  private convertMessagesToGemini(messages: readonly vscode.LanguageModelChatRequestMessage[]): {
-    system: string;
-    contents: GeminiMessage[];
-  } {
-    const contents: GeminiMessage[] = [];
-    const systemParts: string[] = [];
-
-    for (const message of messages) {
-      if (
-        message.role !== vscode.LanguageModelChatMessageRole.User &&
-        message.role !== vscode.LanguageModelChatMessageRole.Assistant
-      ) {
-        const systemText = this.stringifyRequestMessage(message);
-        if (systemText) {
-          systemParts.push(systemText);
-        }
-        continue;
-      }
-
-      const role =
-        message.role === vscode.LanguageModelChatMessageRole.Assistant ? 'model' : 'user';
-      const parts: GeminiPart[] = [];
-
-      for (const part of message.content) {
-        if (part instanceof vscode.LanguageModelTextPart) {
-          parts.push({ text: part.value });
-          continue;
-        }
-
-        if (part instanceof vscode.LanguageModelToolCallPart) {
-          parts.push({
-            functionCall: {
-              name: part.name,
-              args: this.ensureObject(part.input),
-            },
-          });
-          this.rememberToolCall(part.callId, part.name);
-          continue;
-        }
-
-        if (part instanceof vscode.LanguageModelToolResultPart) {
-          parts.push({
-            functionResponse: {
-              name: this.toolNameByCallId.get(part.callId) || 'tool',
-              response: {
-                output: this.stringifyToolResultPart(part),
-              },
-            },
-          });
-          continue;
-        }
-
-        const imageUrl = this.tryReadImageUrl(part);
-        if (imageUrl) {
-          if (imageUrl.startsWith('data:')) {
-            const inlineData = this.dataUrlToGeminiInlineData(imageUrl);
-            if (inlineData) {
-              parts.push({ inlineData });
-              continue;
-            }
-          }
-
-          parts.push({
-            file_data: {
-              mime_type: this.inferMimeTypeFromUrl(imageUrl),
-              file_uri: imageUrl,
-            },
-          });
-          continue;
-        }
-
-        if (
-          part instanceof vscode.LanguageModelDataPart &&
-          typeof part.mimeType === 'string' &&
-          part.mimeType.startsWith('image/')
-        ) {
-          parts.push({
-            inlineData: {
-              mimeType: part.mimeType,
-              data: Buffer.from(part.data).toString('base64'),
-            },
-          });
-          continue;
-        }
-
-        const inlineText = this.tryReadTextData(part);
-        if (inlineText) {
-          parts.push({ text: inlineText });
-          continue;
-        }
-
-        parts.push({ text: this.stringifyUnknown(part) });
-      }
-
-      if (parts.length === 0) {
-        parts.push({ text: '' });
-      }
-
-      contents.push({ role, parts });
-    }
-
-    return {
-      system: systemParts.join('\n\n'),
-      contents,
-    };
-  }
-
-  private convertToolsToOpenAI(
-    options: vscode.ProvideLanguageModelChatResponseOptions,
-    modelConfig: KieProviderModel
-  ): OpenAIRequestTool[] {
-    if (!modelConfig.enableTools) {
-      return [];
-    }
-
-    return (options.tools ?? [])
-      .filter((tool) => typeof tool.name === 'string' && tool.name.trim().length > 0)
-      .map((tool) => ({
-        type: 'function',
-        function: {
-          name: tool.name.trim(),
-          description: tool.description,
-          parameters: tool.inputSchema,
-        },
-      }));
-  }
-
-  private convertToolsToResponses(
-    options: vscode.ProvideLanguageModelChatResponseOptions,
-    modelConfig: KieProviderModel
-  ): Array<{
-    type: 'function';
-    name: string;
-    description?: string;
-    parameters?: unknown;
-  }> {
-    if (!modelConfig.enableTools) {
-      return [];
-    }
-
-    return (options.tools ?? [])
-      .filter((tool) => typeof tool.name === 'string' && tool.name.trim().length > 0)
-      .map((tool) => ({
-        type: 'function',
-        name: tool.name.trim(),
-        description: tool.description,
-        parameters: tool.inputSchema,
-      }));
-  }
-
-  private convertToolsToClaude(
-    options: vscode.ProvideLanguageModelChatResponseOptions,
-    modelConfig: KieProviderModel
-  ): ClaudeTool[] {
-    if (!modelConfig.enableTools) {
-      return [];
-    }
-
-    return (options.tools ?? [])
-      .filter((tool) => typeof tool.name === 'string' && tool.name.trim().length > 0)
-      .map((tool) => ({
-        name: tool.name.trim(),
-        description: tool.description,
-        input_schema: tool.inputSchema,
-      }));
-  }
-
-  private applyAutomaticClaudeCacheControl(
-    body: Record<string, unknown>,
-    cacheControl: ClaudeCacheControl
-  ): void {
-    const tools = Array.isArray(body.tools) ? (body.tools as ClaudeTool[]) : [];
-    if (tools.length > 0) {
-      const lastTool = tools[tools.length - 1];
-      if (lastTool && typeof lastTool === 'object' && !lastTool.cache_control) {
-        lastTool.cache_control = { ...cacheControl };
-      }
-    }
-
-    const system = body.system;
-    if (typeof system === 'string' && system.trim().length > 0) {
-      body.system = [{ type: 'text', text: system, cache_control: { ...cacheControl } }];
-    } else if (Array.isArray(system) && system.length > 0) {
-      const lastBlock = system[system.length - 1] as ClaudeSystemBlock | undefined;
-      if (lastBlock && typeof lastBlock === 'object' && !lastBlock.cache_control) {
-        lastBlock.cache_control = { ...cacheControl };
-      }
-    }
-
-    const messages = Array.isArray(body.messages) ? (body.messages as ClaudeMessage[]) : [];
-    if (messages.length === 0) {
-      return;
-    }
-
-    const messageIndex = messages.length === 1 ? 0 : messages.length - 2;
-    const selectedMessage = messages[messageIndex];
-    const selectedPart = selectedMessage?.content?.[selectedMessage.content.length - 1];
-    if (selectedPart && typeof selectedPart === 'object' && !selectedPart.cache_control) {
-      selectedPart.cache_control = { ...cacheControl };
+      const finish = asJson(choice).finish_reason;
+      if (finish === 'tool_calls') emitIndexedCalls(calls, progress);
     }
   }
+  emitIndexedCalls(calls, progress);
+}
 
-  private convertToolsToGemini(
-    options: vscode.ProvideLanguageModelChatResponseOptions,
-    modelConfig: KieProviderModel
-  ): Array<{
-    functionDeclarations: Array<{
-      name: string;
-      description?: string;
-      parameters?: unknown;
-    }>;
-  }> {
-    if (!modelConfig.enableTools) {
-      return [];
-    }
-
-    const functionDeclarations = (options.tools ?? [])
-      .filter((tool) => typeof tool.name === 'string' && tool.name.trim().length > 0)
-      .map((tool) => ({
-        name: tool.name.trim(),
-        description: tool.description,
-        parameters: tool.inputSchema,
-      }));
-
-    return functionDeclarations.length > 0 ? [{ functionDeclarations }] : [];
+async function parseResponsesResponse(
+  response: Response,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  token: vscode.CancellationToken
+): Promise<void> {
+  if (!isEventStream(response)) {
+    emitResponsesPayload(asJson(await response.json()), progress, new Set());
+    return;
   }
-
-  private async consumeStreamingResponse(
-    protocol: KieModelProtocol,
-    response: Response,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    token: vscode.CancellationToken
-  ): Promise<void> {
-    switch (protocol) {
-      case 'openai-responses':
-        await this.consumeResponsesStream(response, progress, token);
-        return;
-      case 'claude':
-        await this.consumeClaudeStream(response, progress, token);
-        return;
-      case 'gemini':
-        await this.consumeGeminiStream(response, progress, token);
-        return;
-      case 'openai-chat':
-      default:
-        await this.consumeOpenAIChatStream(response, progress, token);
-        return;
-    }
-  }
-
-  private async consumeOpenAIChatStream(
-    response: Response,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    token: vscode.CancellationToken
-  ): Promise<void> {
-    if (!response.body) {
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const toolCalls = new Map<number, OpenAIToolCall>();
-
-    try {
-      while (!token.isCancellationRequested) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const events = buffer.split('\n\n');
-        buffer = events.pop() ?? '';
-
-        for (const event of events) {
-          const lines = event
-            .split('\n')
-            .map((line) => line.trim())
-            .filter((line) => line.startsWith('data:'));
-
-          for (const line of lines) {
-            const payload = line.slice('data:'.length).trim();
-            if (!payload || payload === '[DONE]') {
-              continue;
-            }
-
-            const parsed = JSON.parse(payload) as OpenAIChatResponse;
-            const choice = parsed.choices?.[0];
-            const delta = choice?.delta;
-
-            if (typeof delta?.content === 'string' && delta.content.length > 0) {
-              progress.report(new vscode.LanguageModelTextPart(delta.content));
-            } else if (Array.isArray(delta?.content)) {
-              for (const part of delta.content) {
-                if (part?.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
-                  progress.report(new vscode.LanguageModelTextPart(part.text));
-                }
-              }
-            }
-
-            for (const toolCall of delta?.tool_calls ?? []) {
-              const index = toolCall.index ?? 0;
-              const previous = toolCalls.get(index);
-              toolCalls.set(index, {
-                id: toolCall.id ?? previous?.id ?? `tool-call-${index}`,
-                type: 'function',
-                function: {
-                  name: toolCall.function?.name ?? previous?.function.name ?? `tool_${index}`,
-                  arguments:
-                    (previous?.function.arguments ?? '') + (toolCall.function?.arguments ?? ''),
-                },
-              });
-            }
-
-            if (choice?.finish_reason === 'tool_calls') {
-              this.emitOpenAIToolCalls(progress, toolCalls);
-            }
-          }
-        }
+  const emitted = new Set<string>();
+  const argDeltas = new Map<string, string>();
+  for await (const event of sse(response, token)) {
+    const json = parseJson(event.data);
+    const type = string(json.type) || event.event;
+    if (type === 'response.output_text.delta' && typeof json.delta === 'string') {
+      progress.report(new vscode.LanguageModelTextPart(json.delta));
+    } else if (type === 'response.function_call_arguments.delta') {
+      const key = string(json.call_id) || string(json.item_id);
+      if (key && typeof json.delta === 'string') {
+        argDeltas.set(key, (argDeltas.get(key) ?? '') + json.delta);
       }
-    } finally {
-      reader.releaseLock();
+    } else if (type === 'response.output_item.done') {
+      emitResponseItem(asJson(json.item), progress, emitted, argDeltas);
+    } else if (type === 'response.completed') {
+      emitResponsesPayload(asJson(json.response), progress, emitted);
     }
-
-    this.emitOpenAIToolCalls(progress, toolCalls);
   }
+}
 
-  private async consumeResponsesStream(
-    response: Response,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    token: vscode.CancellationToken
-  ): Promise<void> {
-    if (!response.body) {
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const toolCalls = new Map<string, ToolCallRecord>();
-
-    try {
-      while (!token.isCancellationRequested) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line || line.startsWith('event:')) {
-            continue;
-          }
-
-          const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
-          if (!payload || payload === '[DONE]') {
-            continue;
-          }
-
-          const parsed = JSON.parse(payload) as Record<string, unknown>;
-          const eventType = typeof parsed.type === 'string' ? parsed.type : '';
-
-          if (
-            eventType === 'response.output_text.delta' &&
-            typeof parsed.delta === 'string' &&
-            parsed.delta.length > 0
-          ) {
-            progress.report(new vscode.LanguageModelTextPart(parsed.delta));
-            continue;
-          }
-
-          if (
-            eventType === 'response.function_call_arguments.delta' &&
-            typeof parsed.delta === 'string'
-          ) {
-            const key = String(parsed.item_id ?? parsed.output_index ?? parsed.call_id ?? '0');
-            const existing = toolCalls.get(key) ?? {
-              callId: String(parsed.call_id ?? key),
-              name: typeof parsed.name === 'string' ? parsed.name : `tool_${key}`,
-              input: {},
-            };
-            const previousArgs = this.stringifyUnknown(existing.input);
-            existing.input = this.parseToolInput(previousArgs + parsed.delta);
-            toolCalls.set(key, existing);
-            continue;
-          }
-
-          if (eventType === 'response.output_item.added' || eventType === 'response.output_item.done') {
-            this.ingestResponsesToolCall(parsed.item, toolCalls);
-            if (eventType === 'response.output_item.done') {
-              this.emitToolCalls(progress, toolCalls);
-            }
-            continue;
-          }
-
-          if (eventType === 'response.completed') {
-            const responsePayload = (parsed.response ?? {}) as ResponsesApiResponse['response'];
-            for (const item of responsePayload?.output ?? []) {
-              this.ingestResponsesToolCall(item, toolCalls);
-            }
-            this.emitToolCalls(progress, toolCalls);
-          }
-        }
+async function parseClaudeResponse(
+  response: Response,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  token: vscode.CancellationToken
+): Promise<void> {
+  if (!isEventStream(response)) {
+    const json = asJson(await response.json());
+    emitClaudeContent(asArray(json.content ?? asJson(json.response).content), progress);
+    return;
+  }
+  const calls = new Map<number, { id: string; name: string; args: string; input: Json }>();
+  const emitted = new Set<string>();
+  const flush = (index?: number) => {
+    for (const [key, call] of calls) {
+      if (index !== undefined && key !== index) continue;
+      if (!emitted.has(call.id)) {
+        progress.report(
+          new vscode.LanguageModelToolCallPart(
+            call.id,
+            call.name,
+            call.args ? parseJson(call.args) : call.input
+          )
+        );
+        emitted.add(call.id);
       }
-    } finally {
-      reader.releaseLock();
+      calls.delete(key);
     }
-
-    this.emitToolCalls(progress, toolCalls);
-  }
-
-  private async consumeClaudeStream(
-    response: Response,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    token: vscode.CancellationToken
-  ): Promise<void> {
-    if (!response.body) {
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const toolUses = new Map<number, { callId: string; name: string; partialJson: string; input: object }>();
-
-    try {
-      while (!token.isCancellationRequested) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line || line.startsWith('event:')) {
-            continue;
-          }
-
-          const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
-          if (!payload || payload === '[DONE]') {
-            continue;
-          }
-
-          const parsed = JSON.parse(payload) as Record<string, unknown>;
-          const eventType = typeof parsed.type === 'string' ? parsed.type : '';
-
-          if (eventType === 'content_block_start') {
-            const block = parsed.content_block as
-              | { type?: string; id?: string; name?: string; input?: object }
-              | undefined;
-            if (block?.type === 'tool_use') {
-              const key = Number(parsed.index ?? 0);
-              toolUses.set(key, {
-                callId: block.id || `tool-call-${key}`,
-                name: block.name || `tool_${key}`,
-                partialJson: '',
-                input: this.ensureObject(block.input),
-              });
-            }
-            continue;
-          }
-
-          if (eventType === 'content_block_delta') {
-            const delta = parsed.delta as
-              | { type?: string; text?: string; partial_json?: string; thinking?: string }
-              | undefined;
-            if (delta?.type === 'text_delta' && typeof delta.text === 'string') {
-              progress.report(new vscode.LanguageModelTextPart(delta.text));
-              continue;
-            }
-            if (delta?.type === 'input_json_delta') {
-              const key = Number(parsed.index ?? 0);
-              const existing = toolUses.get(key);
-              if (existing) {
-                existing.partialJson += delta.partial_json || '';
-              }
-            }
-            continue;
-          }
-
-          if (eventType === 'message_delta') {
-            const stopReason = (parsed.delta as { stop_reason?: string } | undefined)?.stop_reason;
-            if (stopReason === 'tool_use') {
-              for (const [key, toolUse] of toolUses.entries()) {
-                this.emitToolCall(progress, {
-                  callId: toolUse.callId,
-                  name: toolUse.name,
-                  input: toolUse.partialJson
-                    ? this.parseToolInput(toolUse.partialJson)
-                    : this.ensureObject(toolUse.input),
-                });
-                toolUses.delete(key);
-              }
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    for (const toolUse of toolUses.values()) {
-      this.emitToolCall(progress, {
-        callId: toolUse.callId,
-        name: toolUse.name,
-        input: toolUse.partialJson
-          ? this.parseToolInput(toolUse.partialJson)
-          : this.ensureObject(toolUse.input),
-      });
-    }
-  }
-
-  private async consumeGeminiStream(
-    response: Response,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    token: vscode.CancellationToken
-  ): Promise<void> {
-    if (!response.body) {
-      return;
-    }
-
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    const toolCalls = new Map<string, ToolCallRecord>();
-
-    try {
-      while (!token.isCancellationRequested) {
-        const { done, value } = await reader.read();
-        if (done) {
-          break;
-        }
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n');
-        buffer = lines.pop() ?? '';
-
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line || line.startsWith('event:')) {
-            continue;
-          }
-
-          const payload = line.startsWith('data:') ? line.slice(5).trim() : line;
-          if (!payload || payload === '[DONE]') {
-            continue;
-          }
-
-          const parsed = JSON.parse(payload) as GeminiResponse | GeminiResponse[];
-          const items = Array.isArray(parsed) ? parsed : [parsed];
-
-          for (const item of items) {
-            const candidate = item.candidates?.[0];
-            for (const part of candidate?.content?.parts ?? []) {
-              if (typeof part.text === 'string' && part.text.length > 0 && !part.thought) {
-                progress.report(new vscode.LanguageModelTextPart(part.text));
-              }
-
-              if (part.functionCall?.name) {
-                const callId = part.functionCall.id || part.functionCall.name;
-                toolCalls.set(callId, {
-                  callId,
-                  name: part.functionCall.name,
-                  input: this.ensureObject(part.functionCall.args),
-                });
-              }
-            }
-
-            if (candidate?.finishReason === 'STOP') {
-              this.emitToolCalls(progress, toolCalls);
-            }
-          }
-        }
-      }
-    } finally {
-      reader.releaseLock();
-    }
-
-    this.emitToolCalls(progress, toolCalls);
-  }
-
-  private reportNonStreamingResponse(
-    protocol: KieModelProtocol,
-    payload: unknown,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
-  ): void {
-    switch (protocol) {
-      case 'openai-responses':
-        this.reportResponsesNonStream(payload as ResponsesApiResponse, progress);
-        return;
-      case 'claude':
-        this.reportClaudeNonStream(payload as ClaudeResponse, progress);
-        return;
-      case 'gemini':
-        this.reportGeminiNonStream(payload as GeminiResponse, progress);
-        return;
-      case 'openai-chat':
-      default:
-        this.reportOpenAIChatNonStream(payload as OpenAIChatResponse, progress);
-        return;
-    }
-  }
-
-  private reportOpenAIChatNonStream(
-    payload: OpenAIChatResponse,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
-  ): void {
-    if (payload.error?.message) {
-      throw new Error(payload.error.message);
-    }
-
-    const message = payload.choices?.[0]?.message;
-    if (!message) {
-      return;
-    }
-
-    if (typeof message.content === 'string' && message.content.length > 0) {
-      progress.report(new vscode.LanguageModelTextPart(message.content));
-    } else if (Array.isArray(message.content)) {
-      for (const part of message.content) {
-        if (part?.type === 'text' && typeof part.text === 'string' && part.text.length > 0) {
-          progress.report(new vscode.LanguageModelTextPart(part.text));
-        }
-      }
-    }
-
-    const toolCalls = new Map<number, ToolCallRecord>();
-    for (const [index, toolCall] of (message.tool_calls ?? []).entries()) {
-      toolCalls.set(index, {
-        callId: toolCall.id,
-        name: toolCall.function.name,
-        input: this.parseToolInput(toolCall.function.arguments),
-      });
-    }
-    this.emitIndexedToolCalls(progress, toolCalls);
-  }
-
-  private reportResponsesNonStream(
-    payload: ResponsesApiResponse,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
-  ): void {
-    if (payload.error?.message) {
-      throw new Error(payload.error.message);
-    }
-
-    const output = payload.response?.output ?? payload.output ?? [];
-    const toolCalls = new Map<string, ToolCallRecord>();
-
-    for (const item of output) {
-      if (item.type === 'message') {
-        for (const content of item.content ?? []) {
-          if (content.type === 'output_text' && typeof content.text === 'string') {
-            progress.report(new vscode.LanguageModelTextPart(content.text));
-          }
-        }
-      }
-      this.ingestResponsesToolCall(item, toolCalls);
-    }
-
-    this.emitToolCalls(progress, toolCalls);
-  }
-
-  private reportClaudeNonStream(
-    payload: ClaudeResponse,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
-  ): void {
-    if (payload.error?.message) {
-      throw new Error(payload.error.message);
-    }
-
-    const content = payload.response?.content ?? payload.content ?? [];
-    for (const part of content) {
-      if (part.type === 'text' && typeof part.text === 'string') {
-        progress.report(new vscode.LanguageModelTextPart(part.text));
-      }
-      if (part.type === 'tool_use' && typeof part.name === 'string') {
-        this.emitToolCall(progress, {
-          callId: part.id || part.name,
-          name: part.name,
-          input: this.ensureObject(part.input),
+  };
+  for await (const event of sse(response, token)) {
+    const json = parseJson(event.data);
+    const type = string(json.type) || event.event;
+    const index = number(json.index);
+    if (type === 'content_block_start') {
+      const block = asJson(json.content_block);
+      if (block.type === 'tool_use') {
+        calls.set(index, {
+          id: string(block.id) || `tool-${index}`,
+          name: string(block.name) || `tool_${index}`,
+          args: '',
+          input: asJson(block.input),
         });
       }
-    }
-  }
-
-  private reportGeminiNonStream(
-    payload: GeminiResponse,
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>
-  ): void {
-    if (payload.error?.message) {
-      throw new Error(payload.error.message);
-    }
-
-    const candidate = payload.response?.candidates?.[0] ?? payload.candidates?.[0];
-    for (const part of candidate?.content?.parts ?? []) {
-      if (typeof part.text === 'string' && part.text.length > 0 && !part.thought) {
-        progress.report(new vscode.LanguageModelTextPart(part.text));
+    } else if (type === 'content_block_delta') {
+      const delta = asJson(json.delta);
+      if (delta.type === 'text_delta' && typeof delta.text === 'string') {
+        progress.report(new vscode.LanguageModelTextPart(delta.text));
+      } else if (delta.type === 'input_json_delta') {
+        const call = calls.get(index);
+        if (call && typeof delta.partial_json === 'string') call.args += delta.partial_json;
       }
-
-      if (part.functionCall?.name) {
-        this.emitToolCall(progress, {
-          callId: part.functionCall.id || part.functionCall.name,
-          name: part.functionCall.name,
-          input: this.ensureObject(part.functionCall.args),
-        });
-      }
+    } else if (type === 'content_block_stop') {
+      flush(index);
+    } else if (type === 'message_stop' || type === 'message_delta') {
+      flush();
+    } else if (type === 'error') {
+      throw new Error(string(asJson(json.error).message) || 'Claude stream failed.');
     }
   }
+  flush();
+}
 
-  private emitOpenAIToolCalls(
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    toolCalls: Map<number, OpenAIToolCall>
-  ): void {
-    const indexed = new Map<number, ToolCallRecord>();
-    for (const [index, toolCall] of toolCalls.entries()) {
-      indexed.set(index, {
-        callId: toolCall.id || `tool-call-${index}`,
-        name: toolCall.function.name,
-        input: this.parseToolInput(toolCall.function.arguments),
-      });
-    }
-    this.emitIndexedToolCalls(progress, indexed);
-    toolCalls.clear();
+async function parseGeminiResponse(
+  response: Response,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  token: vscode.CancellationToken
+): Promise<void> {
+  if (!isEventStream(response)) {
+    emitGeminiPayload(asJson(await response.json()), progress);
+    return;
   }
-
-  private emitIndexedToolCalls(
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    toolCalls: Map<number, ToolCallRecord>
-  ): void {
-    for (const [index, toolCall] of toolCalls.entries()) {
-      this.emitToolCall(progress, toolCall);
-      toolCalls.delete(index);
-    }
+  for await (const event of sse(response, token)) {
+    emitGeminiPayload(parseJson(event.data), progress);
   }
+}
 
-  private emitToolCalls(
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    toolCalls: Map<string, ToolCallRecord>
-  ): void {
-    for (const [key, toolCall] of toolCalls.entries()) {
-      this.emitToolCall(progress, toolCall);
-      toolCalls.delete(key);
+async function* sse(
+  response: Response,
+  token: vscode.CancellationToken
+): AsyncGenerator<SseEvent> {
+  if (!response.body) return;
+  const reader = response.body.getReader();
+  const textDecoder = new TextDecoder();
+  const eventDecoder = new SseDecoder();
+  try {
+    while (!token.isCancellationRequested) {
+      const chunk = await reader.read();
+      const text = textDecoder.decode(chunk.value, { stream: !chunk.done });
+      for (const event of eventDecoder.push(text)) yield event;
+      if (chunk.done) break;
     }
+    for (const event of eventDecoder.finish()) yield event;
+  } finally {
+    reader.releaseLock();
   }
+}
 
-  private emitToolCall(
-    progress: vscode.Progress<vscode.LanguageModelResponsePart>,
-    toolCall: ToolCallRecord
-  ): void {
-    this.rememberToolCall(toolCall.callId, toolCall.name);
+function emitOpenAIMessage(
+  message: Json,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>
+): void {
+  if (typeof message.content === 'string') {
+    progress.report(new vscode.LanguageModelTextPart(message.content));
+  }
+  for (const raw of asArray(message.tool_calls)) {
+    const call = asJson(raw);
+    const fn = asJson(call.function);
     progress.report(
-      new vscode.LanguageModelToolCallPart(toolCall.callId, toolCall.name, toolCall.input)
+      new vscode.LanguageModelToolCallPart(
+        string(call.id) || string(fn.name),
+        string(fn.name),
+        parseJson(string(fn.arguments) || '{}')
+      )
     );
   }
+}
 
-  private ingestResponsesToolCall(
-    item: unknown,
-    toolCalls: Map<string, ToolCallRecord>
-  ): void {
-    if (!item || typeof item !== 'object') {
-      return;
-    }
-
-    const candidate = item as {
-      type?: string;
-      call_id?: string;
-      id?: string;
-      name?: string;
-      arguments?: string;
-      input?: object;
-    };
-    if (candidate.type !== 'function_call') {
-      return;
-    }
-
-    const key = candidate.call_id || candidate.id || candidate.name || `tool-${toolCalls.size}`;
-    toolCalls.set(key, {
-      callId: candidate.call_id || key,
-      name: candidate.name || 'function_call',
-      input: candidate.arguments
-        ? this.parseToolInput(candidate.arguments)
-        : this.ensureObject(candidate.input),
-    });
+function emitIndexedCalls(
+  calls: Map<number, { id: string; name: string; args: string }>,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>
+): void {
+  for (const [index, call] of calls) {
+    progress.report(
+      new vscode.LanguageModelToolCallPart(
+        call.id || `tool-${index}`,
+        call.name || `tool_${index}`,
+        parseJson(call.args || '{}')
+      )
+    );
+    calls.delete(index);
   }
+}
 
-  private rememberToolCall(callId: string, name: string): void {
-    if (!callId || !name) {
-      return;
+function emitResponsesPayload(
+  payload: Json,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  emitted: Set<string>
+): void {
+  const normalized = Object.keys(asJson(payload.data)).length ? asJson(payload.data) : payload;
+  const output = asArray(normalized.output ?? asJson(normalized.response).output);
+  for (const item of output) emitResponseItem(asJson(item), progress, emitted, new Map());
+}
+
+function emitResponseItem(
+  item: Json,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>,
+  emitted: Set<string>,
+  deltas: Map<string, string>
+): void {
+  if (item.type === 'message') {
+    for (const part of asArray(item.content)) {
+      const content = asJson(part);
+      if (content.type === 'output_text' && typeof content.text === 'string') {
+        progress.report(new vscode.LanguageModelTextPart(content.text));
+      }
     }
-
-    this.toolNameByCallId.set(callId, name);
-  }
-
-  private getOpenAiRole(role: vscode.LanguageModelChatMessageRole): OpenAIMessage['role'] {
-    switch (role) {
-      case vscode.LanguageModelChatMessageRole.Assistant:
-        return 'assistant';
-      case vscode.LanguageModelChatMessageRole.User:
-        return 'user';
-      default:
-        return 'system';
-    }
-  }
-
-  private getResponsesRole(
-    role: vscode.LanguageModelChatMessageRole
-  ): ResponsesInputMessage['role'] {
-    switch (role) {
-      case vscode.LanguageModelChatMessageRole.Assistant:
-        return 'assistant';
-      case vscode.LanguageModelChatMessageRole.User:
-        return 'user';
-      default:
-        return 'system';
+  } else if (item.type === 'function_call') {
+    const callId = string(item.call_id) || string(item.id);
+    if (callId && !emitted.has(callId)) {
+      const args = string(item.arguments) || deltas.get(callId) || '{}';
+      progress.report(
+        new vscode.LanguageModelToolCallPart(callId, string(item.name), parseJson(args))
+      );
+      emitted.add(callId);
     }
   }
+}
 
-  private stringifyRequestMessage(message: vscode.LanguageModelChatRequestMessage): string {
-    return message.content
-      .map((part) => {
-        if (part instanceof vscode.LanguageModelTextPart) {
-          return part.value;
-        }
-        return this.tryReadTextData(part) ?? this.stringifyUnknown(part);
-      })
-      .join('\n');
+function emitClaudeContent(
+  content: unknown[],
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>
+): void {
+  for (const raw of content) {
+    const part = asJson(raw);
+    if (part.type === 'text' && typeof part.text === 'string') {
+      progress.report(new vscode.LanguageModelTextPart(part.text));
+    } else if (part.type === 'tool_use') {
+      progress.report(
+        new vscode.LanguageModelToolCallPart(
+          string(part.id) || string(part.name),
+          string(part.name),
+          asJson(part.input)
+        )
+      );
+    }
   }
+}
 
-  private stringifyToolResultPart(part: vscode.LanguageModelToolResultPart): string {
-    return Array.isArray(part.content)
-      ? part.content
-          .map((item) =>
-            item instanceof vscode.LanguageModelTextPart
-              ? item.value
-              : this.tryReadTextData(item) ?? this.stringifyUnknown(item)
+function emitGeminiPayload(
+  payload: Json,
+  progress: vscode.Progress<vscode.LanguageModelResponsePart>
+): void {
+  const normalized = Object.keys(asJson(payload.data)).length ? asJson(payload.data) : payload;
+  for (const candidate of asArray(normalized.candidates ?? asJson(normalized.response).candidates)) {
+    for (const raw of asArray(asJson(asJson(candidate).content).parts)) {
+      const part = asJson(raw);
+      if (typeof part.text === 'string' && !part.thought) {
+        progress.report(new vscode.LanguageModelTextPart(part.text));
+      }
+      const call = asJson(part.functionCall);
+      if (call.name) {
+        progress.report(
+          new vscode.LanguageModelToolCallPart(
+            string(call.id) || string(call.name),
+            string(call.name),
+            asJson(call.args)
           )
-          .join('\n')
-      : this.stringifyUnknown(part.content);
-  }
-
-  private readClaudeTopLevelCacheControl(value: unknown): ClaudeCacheControl | null {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return null;
-    }
-
-    const candidate = value as Record<string, unknown>;
-    if (candidate.type !== 'ephemeral') {
-      return null;
-    }
-
-    if (candidate.ttl === '5m' || candidate.ttl === '1h') {
-      return { type: 'ephemeral', ttl: candidate.ttl };
-    }
-
-    return { type: 'ephemeral' };
-  }
-
-  private normalizeLooseObject(value: unknown): Record<string, unknown> {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) {
-      return {};
-    }
-
-    return { ...(value as Record<string, unknown>) };
-  }
-
-  private tryReadImageUrl(part: unknown): string | null {
-    const candidate = this.asPartCandidate(part);
-    if (!candidate) {
-      return null;
-    }
-
-    if (typeof candidate.value === 'string' && candidate.value.startsWith('http')) {
-      return candidate.value;
-    }
-
-    if (candidate.value instanceof vscode.Uri) {
-      return candidate.value.toString(true);
-    }
-
-    if (
-      candidate.value &&
-      typeof candidate.value === 'object' &&
-      'url' in candidate.value &&
-      typeof (candidate.value as { url?: unknown }).url === 'string'
-    ) {
-      return (candidate.value as { url: string }).url;
-    }
-
-    if (
-      part instanceof vscode.LanguageModelDataPart &&
-      typeof part.mimeType === 'string' &&
-      part.mimeType.startsWith('image/')
-    ) {
-      return `data:${part.mimeType};base64,${Buffer.from(part.data).toString('base64')}`;
-    }
-
-    return null;
-  }
-
-  private tryReadFileUrl(part: unknown): string | null {
-    const candidate = this.asPartCandidate(part);
-    if (!candidate) {
-      return null;
-    }
-
-    if (typeof candidate.value === 'string' && candidate.value.startsWith('http')) {
-      return candidate.value;
-    }
-
-    if (candidate.value instanceof vscode.Uri) {
-      return candidate.value.toString(true);
-    }
-
-    return null;
-  }
-
-  private tryReadTextData(part: unknown): string | null {
-    if (
-      part instanceof vscode.LanguageModelDataPart &&
-      typeof part.mimeType === 'string' &&
-      part.mimeType.startsWith('text/')
-    ) {
-      return Buffer.from(part.data).toString('utf8');
-    }
-
-    return null;
-  }
-
-  private asPartCandidate(
-    part: unknown
-  ): { value?: unknown; mimeType?: string; data?: Uint8Array } | null {
-    if (!part || typeof part !== 'object') {
-      return null;
-    }
-
-    return part as { value?: unknown; mimeType?: string; data?: Uint8Array };
-  }
-
-  private dataUrlToGeminiInlineData(
-    dataUrl: string
-  ): { mimeType: string; data: string } | null {
-    const match = /^data:([^;]+);base64,(.+)$/i.exec(dataUrl);
-    if (!match) {
-      return null;
-    }
-
-    return {
-      mimeType: match[1],
-      data: match[2],
-    };
-  }
-
-  private inferMimeTypeFromUrl(url: string): string {
-    if (url.endsWith('.png')) {
-      return 'image/png';
-    }
-    if (url.endsWith('.webp')) {
-      return 'image/webp';
-    }
-    if (url.endsWith('.gif')) {
-      return 'image/gif';
-    }
-    return 'image/jpeg';
-  }
-
-  private tryParseJson(value: string): unknown {
-    try {
-      return JSON.parse(value);
-    } catch {
-      return { raw: value };
-    }
-  }
-
-  private parseToolInput(value: string): object {
-    const parsed = this.tryParseJson(value);
-    if (parsed && typeof parsed === 'object') {
-      return parsed as object;
-    }
-
-    return { value };
-  }
-
-  private ensureObject(value: unknown): object {
-    if (value && typeof value === 'object') {
-      return value as object;
-    }
-    return {};
-  }
-
-  private stringifyUnknown(value: unknown): string {
-    if (typeof value === 'string') {
-      return value;
-    }
-
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return String(value);
-    }
-  }
-
-  private async getErrorMessage(response: Response): Promise<string> {
-    const fallback = `Upstream request failed with status ${response.status}.`;
-
-    try {
-      const payload = (await response.json()) as { error?: { message?: string }; msg?: string };
-      return payload.error?.message ?? payload.msg ?? fallback;
-    } catch {
-      try {
-        const text = await response.text();
-        return text || fallback;
-      } catch {
-        return fallback;
+        );
       }
     }
   }
+}
+
+async function readHttpError(response: Response): Promise<string> {
+  const text = await response.text();
+  try {
+    const json = asJson(JSON.parse(text));
+    return (
+      string(asJson(json.error).message) ||
+      string(json.message) ||
+      string(json.msg) ||
+      `${response.status} ${response.statusText}`
+    );
+  } catch {
+    return text.trim() || `${response.status} ${response.statusText}`;
+  }
+}
+
+function isEventStream(response: Response): boolean {
+  return (response.headers.get('content-type') ?? '').includes('text/event-stream');
+}
+
+function roleName(role: vscode.LanguageModelChatMessageRole): 'user' | 'assistant' {
+  return role === vscode.LanguageModelChatMessageRole.Assistant ? 'assistant' : 'user';
+}
+
+function toolResultText(part: vscode.LanguageModelToolResultPart): string {
+  return part.content.map(partToText).join('\n');
+}
+
+function partToText(part: unknown): string {
+  if (part instanceof vscode.LanguageModelTextPart) return part.value;
+  if (typeof part === 'string') return part;
+  const candidate = asJson(part);
+  if (typeof candidate.value === 'string') return candidate.value;
+  try {
+    return JSON.stringify(part);
+  } catch {
+    return String(part);
+  }
+}
+
+function imageUrl(part: unknown): string | undefined {
+  const candidate = asJson(part);
+  const mime = string(candidate.mimeType);
+  const data = candidate.data;
+  if (mime.startsWith('image/') && data instanceof Uint8Array) {
+    return `data:${mime};base64,${Buffer.from(data).toString('base64')}`;
+  }
+  return undefined;
+}
+
+function objectSchema(value: object | undefined): Json {
+  const schema = asJson(value);
+  return {
+    ...schema,
+    type: string(schema.type) || 'object',
+    properties: asJson(schema.properties),
+  };
+}
+
+function parseJson(value: string): Json {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value);
+    return asJson(parsed);
+  } catch (error) {
+    throw new Error(`Invalid upstream JSON: ${error instanceof Error ? error.message : error}`);
+  }
+}
+
+function asJson(value: unknown): Json {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Json)
+    : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function string(value: unknown): string {
+  return typeof value === 'string' ? value : '';
+}
+
+function number(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
 }

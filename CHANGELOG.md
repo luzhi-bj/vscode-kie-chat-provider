@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.0.30
+
+- Remove unsupported top-level Claude `cache_control` before sending requests.
+- Encode KIE Claude prompt-caching markers on supported system, tool, and message content blocks.
+
+## 0.0.29
+
+- Stop sending Anthropic `tool_choice` to KIE's Claude v1 compatibility endpoint.
+- Continue sending Copilot tools and multi-turn `tool_use`/`tool_result` history without the unsupported selector.
+
+## 0.0.28
+
+- Rewrote the provider around the official VS Code `LanguageModelChatProvider` contract.
+- Added stateless, isolated adapters for OpenAI Chat, OpenAI Responses, Claude, and Gemini.
+- Emit Claude tool calls on `content_block_stop` and preserve Copilot tool-call/result roles.
+- Removed implicit fallback requests, retries, response decompression guesses, and cross-request tool state.
+- Added an SSE split-boundary regression test.
+
+## 0.0.10
+
+- Surface KIE Responses API failed and incomplete stream events with their actual error details.
+- Added stream event diagnostics and compatible text-delta parsing.
+
+## 0.0.9
+
+- Fixed Responses API tool-call history by emitting `function_call` and `function_call_output` as top-level input items.
+- Deduplicated streamed tool calls repeated in both item-completed and response-completed events.
+
+## 0.0.8
+
+- Added support for wrapped and full-object KIE Responses API stream events.
+- Fixed accumulation of streamed function-call argument fragments.
+
+## 0.0.7
+
+- Updated the VS Code language model provider API baseline to 1.125.
+- Added explicit diagnostics when a KIE response finishes without text or tool-call output.
+- Documented troubleshooting for GitHub Copilot MCP server startup failures.
+
 ## 0.0.6
 
 - Added the built-in KIE Claude Opus 5 model.

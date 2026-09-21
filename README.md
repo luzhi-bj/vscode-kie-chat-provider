@@ -23,6 +23,7 @@ It now ships with the current KIE chat model catalog from the official KIE marke
 When `kieChatProvider.includeBuiltInKieModels` is `true`, the extension exposes these KIE models by default:
 
 - GPT: `gpt-5-2`, `gpt-5-4`, `gpt-5-5`, `gpt-5-6-luna`, `gpt-5-6-terra`, `gpt-5-6-sol`
+- Grok: `grok-4-6`
 - Claude: `claude-haiku-4-5`, `claude-opus-4-5`, `claude-opus-4-6`, `claude-opus-4-7`, `claude-opus-4-8`, `claude-opus-5`, `claude-fable-5`, `claude-sonnet-4-5`, `claude-sonnet-4-6`, `claude-sonnet-5`
 - Gemini: `gemini-2.5-pro`, `gemini-3-pro`, `gemini-3.1-pro`, `gemini-2.5-flash`, `gemini-3-flash`, `gemini-3-flash-v1betamodels`
 - Codex: `gpt-5-codex`, `gpt-5.1-codex`, `gpt-5.2-codex`, `gpt-5.3-codex`
@@ -40,6 +41,7 @@ The existing `kie.ai` web codebase mixes multiple request styles behind a fixed 
 
 - GPT 5.2 and Gemini OpenAI variants use chat/completions
 - GPT 5.4 and Codex use responses-style payloads
+- Grok 4.6 uses `/grok/v1/responses`
 - Claude uses `/claude/v1/messages`
 - Native Gemini uses `streamGenerateContent`
 

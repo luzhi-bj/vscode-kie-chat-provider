@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.32
+
+- Added the built-in KIE Grok 4.6 model.
+
 ## 0.0.31
 
 - Deduplicate Responses text repeated across delta, output-item-done, and response-completed events.
